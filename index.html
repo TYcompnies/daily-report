@@ -1911,8 +1911,15 @@ function migrateOldKeys() {
     if (/^dailyReport_\d{4}-\d{2}-\d{2}$/.test(key)) {
       try {
         const data = JSON.parse(localStorage.getItem(key));
-        if (data && data._user && data.date) {
-          const newKey = getReportKey(data._user, data.date);
+        if (data && data.date) {
+          // Determine userId: from _user field, or guess from data content
+          let userId = data._user || '';
+          if (!userId) {
+            if (data.taobao) userId = 'xu';
+            else userId = 'admin'; // default: if no _user and no taobao, assume admin
+            data._user = userId;
+          }
+          const newKey = getReportKey(userId, data.date);
           if (!localStorage.getItem(newKey)) {
             localStorage.setItem(newKey, JSON.stringify(data));
           }
@@ -1925,6 +1932,13 @@ function migrateOldKeys() {
   if (toRemove.length > 0) console.log('Migrated', toRemove.length, 'old-format keys');
 }
 migrateOldKeys(); // Run immediately
+
+// Clear lichang project data (one-time reset, 2026-06-09)
+if (!localStorage.getItem('lichang_cleared_20260609')) {
+  localStorage.removeItem('lichang_projects');
+  localStorage.setItem('lichang_cleared_20260609', '1');
+  console.log('Cleared lichang_projects data');
+}
 
 // ====== Daily Inspirational Quotes ======
 const QUOTES = [
@@ -2128,11 +2142,22 @@ function populateEmployeeGrid() {
     let lastReportDate = '';
 
     if (id === 'lichang') {
-      // Show project count for lichang
+      // Show project count AND daily report count for lichang
       const projects = getLichangProjects();
       reportCount = projects.length;
       if (projects.length > 0) {
         lastReportDate = projects.sort((a,b) => b.updatedAt.localeCompare(a.updatedAt))[0].updatedAt;
+      }
+      // Also count daily reports
+      let dailyCount = 0;
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key.startsWith('dailyReport_' + id + '_')) {
+          try {
+            const data = JSON.parse(localStorage.getItem(key));
+            if (data.date) dailyCount++;
+          } catch(e) {}
+        }
       }
       const card = document.createElement('div');
       card.className = 'employee-card';
@@ -2141,7 +2166,7 @@ function populateEmployeeGrid() {
         <div class="emp-icon">${emp.icon}</div>
         <div class="emp-name">${emp.shortName}</div>
         <div class="emp-role">${emp.name}</div>
-        <div class="emp-count">${reportCount} 個專案</div>
+        <div class="emp-count">${reportCount} 個專案${dailyCount > 0 ? ` · ${dailyCount} 筆報表` : ''}</div>
         ${lastReportDate ? `<div style="font-size:11px;color:var(--gray-400);margin-top:4px;">最近更新：${lastReportDate}</div>` : '<div style="font-size:11px;color:var(--gray-400);margin-top:4px;">尚無專案</div>'}
       `;
       grid.appendChild(card);
@@ -2188,9 +2213,20 @@ function viewEmployee(empId) {
   // Hide main app content
   document.getElementById('mainAppContent').classList.add('hidden-by-admin');
 
-  // ===== Lichang: Show project tracker instead of date-based reports =====
+  // ===== Lichang: Show project tracker AND daily reports =====
   if (empId === 'lichang') {
-    document.getElementById('reportNav').style.display = 'none';
+    // First check if there are daily reports
+    let hasDailyReports = false;
+    for (let i = 0; i < localStorage.length; i++) {
+      const key = localStorage.key(i);
+      if (key.startsWith('dailyReport_' + empId + '_')) {
+        hasDailyReports = true;
+        break;
+      }
+    }
+
+    // Show projects first, with option to switch to daily reports
+    document.getElementById('reportNav').style.display = 'flex';
     renderLichangProjectReport();
     showToast(`📋 正在查看 ${emp.shortName} 的專案追蹤`);
     return;
@@ -2706,11 +2742,20 @@ function v(id) { return document.getElementById(id)?.value || ''; }
 function saveReport() {
   const data = gatherData();
   if (!data.date) { showToast('⚠️ 請先選擇日期'); return; }
-  const userId = currentUser ? currentUser.id : 'unknown';
+  // Use employee ID if admin is viewing/filing for an employee; otherwise use current user ID
+  let userId = currentUser ? currentUser.id : 'unknown';
+  if (currentUser && currentUser.role === 'admin' && viewingEmployee) {
+    userId = viewingEmployee;
+    data._user = viewingEmployee;
+  }
   const key = getReportKey(userId, data.date);
   localStorage.setItem(key, JSON.stringify(data));
   showToast('✅ 報表已儲存！');
   loadHistory();
+  // If admin viewing employee, refresh the employee report view
+  if (currentUser && currentUser.role === 'admin' && viewingEmployee) {
+    viewEmployee(viewingEmployee);
+  }
 }
 
 // ====== Export CSV ======
@@ -3044,10 +3089,34 @@ function deleteReport(date) {
     showToast('⚠️ 僅USER可刪除報表'); return;
   }
   if (!confirm(`確定刪除 ${date} 的報表？`)) return;
-  // Try to find the right key for this date
-  const uid = (currentUser && currentUser.role === 'admin' && viewingEmployee) ? viewingEmployee : (currentUser ? currentUser.id : '');
-  localStorage.removeItem(getReportKey(uid, date));
+  // Find and delete the correct key: search all keys matching this date
+  let found = false;
+  const keysToRemove = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (key.startsWith('dailyReport_') && key.endsWith('_' + date)) {
+      // If viewing a specific employee, only delete that employee's report
+      if (viewingEmployee) {
+        if (key.startsWith('dailyReport_' + viewingEmployee + '_')) {
+          keysToRemove.push(key);
+          found = true;
+        }
+      } else {
+        keysToRemove.push(key);
+        found = true;
+      }
+    }
+  }
+  keysToRemove.forEach(k => localStorage.removeItem(k));
+  if (found) {
+    showToast('🗑️ 報表已刪除');
+  } else {
+    showToast('⚠️ 找不到該日期的報表');
+  }
   loadHistory();
+  // Refresh employee view if applicable
+  if (viewingEmployee) viewEmployee(viewingEmployee);
+}
   showToast('🗑️ 已刪除報表');
 }
 
