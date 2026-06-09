@@ -1,75 +1,26 @@
 {
-  "name": "每日工作回報表 – 義烏市鈦沅商貿有限公司",
+  "name": "每日工作回報表",
   "short_name": "每日回報",
-  "description": "義烏市鈦沅商貿有限公司專用每日工作回報表，支持社群平台/倉庫管理/進出貨/臨時任務填報、CSV匯出、歷史記錄管理",
+  "description": "義烏市鈦沅商貿有限公司專用每日工作回報表",
   "start_url": "/",
   "display": "standalone",
-  "orientation": "portrait-primary",
+  "orientation": "portrait",
   "background_color": "#667eea",
   "theme_color": "#1a56db",
-  "lang": "zh-TW",
-  "categories": ["business", "productivity"],
   "icons": [
     {
-      "src": "icons/icon-72.png",
-      "sizes": "72x72",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "icons/icon-96.png",
-      "sizes": "96x96",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "icons/icon-128.png",
-      "sizes": "128x128",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "icons/icon-144.png",
-      "sizes": "144x144",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "icons/icon-152.png",
-      "sizes": "152x152",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "icons/icon-192.png",
+      "src": "/icons/icon-192.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "icons/icon-384.png",
-      "sizes": "384x384",
-      "type": "image/png",
-      "purpose": "any maskable"
-    },
-    {
-      "src": "icons/icon-512.png",
+      "src": "/icons/icon-512.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
     }
   ],
   "screenshots": [],
-  "shortcuts": [
-    {
-      "name": "填寫今日報表",
-      "url": "/?action=new",
-      "icons": [{"src": "icons/icon-96.png", "sizes": "96x96"}]
-    },
-    {
-      "name": "查看歷史記錄",
-      "url": "/?action=history",
-      "icons": [{"src": "icons/icon-96.png", "sizes": "96x96"}]
-    }
-  ]
+  "categories": ["business", "productivity"]
 }

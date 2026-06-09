@@ -1,6 +1,6 @@
 /**
  * Daily Report PWA - Node.js Server with Cloud Sync
- * Static file server + REST API for cross-device data synchronization
+ * Serves Next.js static export + REST API for cross-device data synchronization
  * Just run: node server.js
  */
 const http = require('http');
@@ -8,8 +8,9 @@ const fs = require('fs');
 const path = require('path');
 
 const PORT = process.env.PORT || 3000;
-const BASE_DIR = __dirname;
-const DATA_DIR = path.join(BASE_DIR, 'data');
+// 靜態檔案目錄（Next.js 靜態匯出已直接放在此目錄）
+const STATIC_DIR = __dirname;
+const DATA_DIR = path.join(STATIC_DIR, 'data');
 const DB_FILE = path.join(DATA_DIR, 'db.json');
 
 // Ensure data directory exists
@@ -41,15 +42,19 @@ const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
   '.css':  'text/css; charset=utf-8',
   '.js':   'application/javascript; charset=utf-8',
+  '.mjs':  'application/javascript; charset=utf-8',
   '.json': 'application/json; charset=utf-8',
   '.png':  'image/png',
   '.jpg':  'image/jpeg',
+  '.jpeg': 'image/jpeg',
   '.svg':  'image/svg+xml',
   '.ico':  'image/x-icon',
   '.webp': 'image/webp',
   '.csv':  'text/csv; charset=utf-8',
   '.woff': 'font/woff',
-  '.woff2':'font/woff2'
+  '.woff2':'font/woff2',
+  '.txt':  'text/plain; charset=utf-8',
+  '.map':  'application/json',
 };
 
 // CORS headers helper
@@ -84,6 +89,87 @@ function sendJSON(res, statusCode, data) {
   };
   res.writeHead(statusCode, headers);
   res.end(JSON.stringify(data));
+}
+
+// 嘗試在靜態目錄中找到檔案
+function tryServeStatic(urlPath, res) {
+  return new Promise((resolve) => {
+    // Security: prevent path traversal
+    if (urlPath.includes('..')) {
+      resolve(false);
+      return;
+    }
+
+    // Block access to data directory
+    if (urlPath.startsWith('/data/')) {
+      res.writeHead(403);
+      res.end('Forbidden');
+      resolve(true);
+      return;
+    }
+
+    // 決定要搜尋的目錄
+    const staticDir = STATIC_DIR;
+
+    // 處理 basePath：/daily-report/xxx → /xxx
+    let filePath = urlPath;
+    if (filePath.startsWith('/daily-report')) {
+      filePath = filePath.replace('/daily-report', '') || '/';
+    }
+
+    // 根路徑重定向到 /daily-report/
+    if (urlPath === '/' || urlPath === '') {
+      res.writeHead(302, { Location: '/daily-report/' });
+      res.end();
+      resolve(true);
+      return;
+    }
+
+    // 對於目錄路徑（如 /dashboard），嘗試 /dashboard/index.html
+    const fullPath = path.join(staticDir, filePath);
+    const ext = path.extname(fullPath).toLowerCase();
+
+    // 嘗試直接匹配檔案
+    const tryFile = (fp) => {
+      return new Promise((r) => {
+        const fileExt = path.extname(fp).toLowerCase();
+        if (!MIME_TYPES[fileExt]) { r(false); return; }
+
+        fs.readFile(fp, (err, data) => {
+          if (err) { r(false); return; }
+
+          const headers = {
+            'Content-Type': MIME_TYPES[fileExt],
+            'Cache-Control': fileExt === '.html' ? 'no-cache' : 'public, max-age=86400',
+            'X-Content-Type-Options': 'nosniff',
+            'Referrer-Policy': 'strict-origin-when-cross-origin',
+            ...corsHeaders('GET, OPTIONS')
+          };
+
+          res.writeHead(200, headers);
+          res.end(data);
+          r(true);
+        });
+      });
+    };
+
+    (async () => {
+      // 1. 嘗試直接路徑
+      if (await tryFile(fullPath)) { resolve(true); return; }
+
+      // 2. 嘗試加 index.html
+      if (await tryFile(path.join(fullPath, 'index.html'))) { resolve(true); return; }
+
+      // 3. 對於無副檔名的路徑，嘗試加 .html
+      if (!ext && await tryFile(fullPath + '.html')) { resolve(true); return; }
+
+      // 4. SPA fallback：所有未匹配的路徑回傳根 index.html
+      if (await tryFile(path.join(staticDir, 'index.html'))) { resolve(true); return; }
+
+      // 5. 404
+      resolve(false);
+    })();
+  });
 }
 
 const server = http.createServer(async (req, res) => {
@@ -149,7 +235,6 @@ const server = http.createServer(async (req, res) => {
       if (clientData.reports && typeof clientData.reports === 'object') {
         for (const [key, value] of Object.entries(clientData.reports)) {
           const existing = db.reports[key];
-          // Client data is newer if it has a more recent _serverUpdatedAt or if server doesn't have it
           if (!existing || !value._serverUpdatedAt ||
               (existing._serverUpdatedAt && value._serverUpdatedAt && value._serverUpdatedAt >= existing._serverUpdatedAt)) {
             db.reports[key] = { ...value, _serverUpdatedAt: new Date().toISOString() };
@@ -226,82 +311,36 @@ const server = http.createServer(async (req, res) => {
   }
 
   // ====== Static File Routes ======
-
-  // Security: prevent path traversal
-  if (urlPath.includes('..')) {
-    res.writeHead(403);
-    res.end('Forbidden');
-    return;
+  const served = await tryServeStatic(urlPath, res);
+  if (!served) {
+    res.writeHead(404);
+    res.end('Not Found');
   }
-
-  // Block access to data directory
-  if (urlPath.startsWith('/data/')) {
-    res.writeHead(403);
-    res.end('Forbidden');
-    return;
-  }
-
-  // Default to index.html
-  let filePath = urlPath;
-  if (filePath === '/') filePath = '/index.html';
-
-  const fullPath = path.join(BASE_DIR, filePath);
-  const ext = path.extname(fullPath).toLowerCase();
-
-  // Only serve known file types
-  if (!MIME_TYPES[ext]) {
-    res.writeHead(415);
-    res.end('Unsupported file type');
-    return;
-  }
-
-  fs.readFile(fullPath, (err, data) => {
-    if (err) {
-      if (err.code === 'ENOENT') {
-        res.writeHead(404);
-        res.end('Not Found');
-      } else {
-        res.writeHead(500);
-        res.end('Internal Server Error');
-      }
-      return;
-    }
-
-    const headers = {
-      'Content-Type': MIME_TYPES[ext],
-      'Cache-Control': ext === '.html' ? 'no-cache' : 'public, max-age=86400',
-      'X-Content-Type-Options': 'nosniff',
-      'Referrer-Policy': 'strict-origin-when-cross-origin',
-      ...corsHeaders('GET, OPTIONS')
-    };
-
-    res.writeHead(200, headers);
-    res.end(data);
-  });
 });
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`
-  ╔══════════════════════════════════════════════╗
-  ║   📋 每日工作回報表 PWA 已啟動！            ║
-  ║   ☁️  雲端同步已啟用                          ║
-  ╠══════════════════════════════════════════════╣
-  ║                                              ║
-  ║   本機訪問: http://localhost:${PORT}             ║
-  ║   區網訪問: http://<你的IP>:${PORT}              ║
-  ║                                              ║
-  ║   📱 手機掃碼即可安裝為App                    ║
-  ║   ☁️ 支持跨裝置雲端同步                      ║
-  ║   📴 支持離線使用                            ║
-  ║                                              ║
-  ║   API 端點:                                  ║
-  ║   GET  /api/reports   - 取得所有報表         ║
-  ║   POST /api/report    - 儲存單筆報表         ║
-  ║   POST /api/sync      - 雙向同步             ║
-  ║   POST /api/project   - 儲存專案資料         ║
-  ║   GET  /api/ping      - 健康檢查             ║
-  ║                                              ║
-  ╚══════════════════════════════════════════════╝
+  ╔══════════════════════════════════════════════════════╗
+  ║   📋 每日工作回報表 PWA v2 已啟動！                 ║
+  ║   ☁️  自動雲端同步已啟用                              ║
+  ╠══════════════════════════════════════════════════════╣
+  ║                                                      ║
+  ║   本機訪問: http://localhost:${PORT}                     ║
+  ║   區網訪問: http://<你的IP>:${PORT}                      ║
+  ║                                                      ║
+  ║   📱 手機掃碼即可安裝為App                            ║
+  ║   ☁️ 自動偵測伺服器，無需手動配置同步                  ║
+  ║   📴 支持離線使用（localStorage）                    ║
+  ║   🎨 Next.js + shadcn/ui 現代化介面                  ║
+  ║                                                      ║
+  ║   API 端點:                                          ║
+  ║   GET  /api/reports   - 取得所有報表                 ║
+  ║   POST /api/report    - 儲存單筆報表                 ║
+  ║   POST /api/sync      - 雙向同步                     ║
+  ║   POST /api/project   - 儲存專案資料                 ║
+  ║   GET  /api/ping      - 健康檢查                     ║
+  ║                                                      ║
+  ╚══════════════════════════════════════════════════════╝
   `);
 
   // Show network IPs for mobile access
