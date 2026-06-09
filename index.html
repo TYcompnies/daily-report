@@ -1898,6 +1898,34 @@
 <div class="toast" id="toast"></div>
 
 <script>
+// ====== Storage Key Helper (multi-user fix) ======
+function getReportKey(userId, date) {
+  return 'dailyReport_' + userId + '_' + date;
+}
+
+// Migrate old format keys (dailyReport_YYYY-MM-DD) to new format (dailyReport_userId_YYYY-MM-DD)
+function migrateOldKeys() {
+  const toRemove = [];
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (/^dailyReport_\d{4}-\d{2}-\d{2}$/.test(key)) {
+      try {
+        const data = JSON.parse(localStorage.getItem(key));
+        if (data && data._user && data.date) {
+          const newKey = getReportKey(data._user, data.date);
+          if (!localStorage.getItem(newKey)) {
+            localStorage.setItem(newKey, JSON.stringify(data));
+          }
+          toRemove.push(key);
+        }
+      } catch(e) {}
+    }
+  }
+  toRemove.forEach(k => localStorage.removeItem(k));
+  if (toRemove.length > 0) console.log('Migrated', toRemove.length, 'old-format keys');
+}
+migrateOldKeys(); // Run immediately
+
 // ====== Daily Inspirational Quotes ======
 const QUOTES = [
   '🔥 成功不是終點，失敗也不是末日，繼續前進的勇氣才是關鍵',
@@ -1978,9 +2006,9 @@ function doLogin() {
   } else {
     // 使用者登入：先歸0表單，再嘗試載入今日報表
     clearFormFields();
-    const todayKey = 'dailyReport_' + dateInput.value;
+    const todayKey = getReportKey(currentUser.id, dateInput.value);
     if (localStorage.getItem(todayKey)) {
-      loadReport(dateInput.value);
+      loadReport(dateInput.value, currentUser.id);
     }
   }
 }
@@ -2030,12 +2058,12 @@ function applyRole() {
   // If xu, clear and load today's taobao data
   if (currentUser.id === 'xu') {
     clearXuFields();
-    const todayKey = 'dailyReport_' + dateInput.value;
+    const todayKey = getReportKey('xu', dateInput.value);
     const saved = localStorage.getItem(todayKey);
     if (saved) {
       try {
         const d = JSON.parse(saved);
-        if (d._user === 'xu' && d.taobao) loadXuData(d.taobao);
+        if (d.taobao) loadXuData(d.taobao);
       } catch(e) {}
     }
   }
@@ -2056,9 +2084,9 @@ function applyRole() {
         } else {
           // 自動登入：先歸0，再載入今日報表
           clearFormFields();
-          const todayKey = 'dailyReport_' + dateInput.value;
+          const todayKey = getReportKey(currentUser.id, dateInput.value);
           if (localStorage.getItem(todayKey)) {
-            loadReport(dateInput.value);
+            loadReport(dateInput.value, currentUser.id);
           }
         }
         return;
@@ -2122,10 +2150,10 @@ function populateEmployeeGrid() {
 
     for (let i = 0; i < localStorage.length; i++) {
       const key = localStorage.key(i);
-      if (key.startsWith('dailyReport_')) {
+      if (key.startsWith('dailyReport_' + id + '_')) {
         try {
           const data = JSON.parse(localStorage.getItem(key));
-          if (data._user === id) {
+          if (data.date) {
             reportCount++;
             if (!lastReportDate || data.date > lastReportDate) {
               lastReportDate = data.date;
@@ -2173,10 +2201,10 @@ function viewEmployee(empId) {
   employeeReportDates = [];
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
-    if (key.startsWith('dailyReport_')) {
+    if (key.startsWith('dailyReport_' + empId + '_')) {
       try {
         const data = JSON.parse(localStorage.getItem(key));
-        if (data._user === empId && data.date) {
+        if (data.date) {
           employeeReportDates.push(data.date);
         }
       } catch(e) {}
@@ -2256,7 +2284,7 @@ function getDayOfWeek(dateStr) {
 
 function renderEmployeeReport(date) {
   const container = document.getElementById('reportContent');
-  const dataStr = localStorage.getItem('dailyReport_' + date);
+  const dataStr = localStorage.getItem(getReportKey(viewingEmployee, date));
   if (!dataStr) {
     container.innerHTML = renderEmptyReport(USERS[viewingEmployee] || { name: '未知', shortName: '未知', icon: '❓' });
     return;
@@ -2437,10 +2465,13 @@ function showMyReport() {
   document.getElementById('mainAppContent').classList.remove('hidden-by-admin');
   // Hide employee list
   document.getElementById('employeeListSection').style.display = 'none';
-  // Reload history (admin's own or all)
-  loadHistory();
-  // Clear form for USER's own report
+  // Clear form and try loading admin's own report
   clearFormFields();
+  const adminKey = getReportKey('admin', dateInput.value);
+  if (localStorage.getItem(adminKey)) {
+    loadReport(dateInput.value, 'admin');
+  }
+  loadHistory();
   showToast('📋 請填寫您的報表');
 }
 
@@ -2582,9 +2613,10 @@ dateInput.addEventListener('change', function() {
   daySelect.value = days[d.getDay()];
   calcWorkDays();
   // 如果該日期有存檔則載入，否則歸0
-  const key = 'dailyReport_' + this.value;
+  const uid = currentUser ? currentUser.id : '';
+  const key = getReportKey(uid, this.value);
   if (localStorage.getItem(key)) {
-    loadReport(this.value);
+    loadReport(this.value, uid);
   } else {
     clearFormFields();
   }
@@ -2674,7 +2706,8 @@ function v(id) { return document.getElementById(id)?.value || ''; }
 function saveReport() {
   const data = gatherData();
   if (!data.date) { showToast('⚠️ 請先選擇日期'); return; }
-  const key = 'dailyReport_' + data.date;
+  const userId = currentUser ? currentUser.id : 'unknown';
+  const key = getReportKey(userId, data.date);
   localStorage.setItem(key, JSON.stringify(data));
   showToast('✅ 報表已儲存！');
   loadHistory();
@@ -2730,7 +2763,8 @@ function exportJSON() {
   for (let i = 0; i < localStorage.length; i++) {
     const key = localStorage.key(i);
     if (key.startsWith('dailyReport_')) {
-      allData.reports[key] = JSON.parse(localStorage.getItem(key));
+      try { allData.reports[key] = JSON.parse(localStorage.getItem(key)); }
+      catch(e) {}
     }
   }
   // Include lichang project data
@@ -2780,7 +2814,14 @@ function importJSON(event) {
             };
             val._version = 3;
           }
-          localStorage.setItem(key, JSON.stringify(val));
+          // Migrate old key format (dailyReport_YYYY-MM-DD) to new format
+          let finalKey = key;
+          if (/^dailyReport_\d{4}-\d{2}-\d{2}$/.test(key) && val._user) {
+            finalKey = getReportKey(val._user, val.date || key.replace('dailyReport_', ''));
+          }
+          localStorage.setItem(finalKey, JSON.stringify(val));
+          // Remove old key if different
+          if (finalKey !== key) localStorage.removeItem(key);
           count++;
         }
       }
@@ -2926,13 +2967,15 @@ function loadHistory() {
   // Filter logic:
   // - Employee (role=user): only sees their own reports
   // - Admin (viewingEmployee set): already handled by report detail view, history not used
-  // - Admin (no viewingEmployee): sees all reports (their own + can manage)
+  // - Admin (no viewingEmployee): sees all reports
   let filtered = reports;
   if (currentUser && currentUser.role === 'user') {
-    // Employees can ONLY see their own reports
-    filtered = reports.filter(r => r.data._user === currentUser.id);
+    // Employees can ONLY see their own reports (match key prefix)
+    const prefix = 'dailyReport_' + currentUser.id + '_';
+    filtered = reports.filter(r => r.key.startsWith(prefix));
   } else if (currentUser && currentUser.role === 'admin' && viewingEmployee) {
-    filtered = reports.filter(r => r.data._user === viewingEmployee);
+    const prefix = 'dailyReport_' + viewingEmployee + '_';
+    filtered = reports.filter(r => r.key.startsWith(prefix));
   }
 
   countEl.textContent = filtered.length ? `${filtered.length} 筆` : '';
@@ -2988,7 +3031,7 @@ function loadHistory() {
         </div>
         ${r.data.social?.douyin_coffee?.issues||r.data.warehouse.issues||r.data.shipping.issues ? `<div style="margin-top:10px;padding:10px;background:#fef2f2;border-radius:8px;font-size:13px;color:#991b1b;"><strong>⚠️ 異常：</strong>${[r.data.social?.douyin_coffee?.issues,r.data.social?.douyin_life?.issues,r.data.social?.fb_life?.issues,r.data.social?.ig_life?.issues,r.data.warehouse.issues,r.data.shipping.issues].filter(Boolean).join('；')}</div>` : ''}
         <div style="margin-top:10px;display:flex;gap:8px;">
-          <button class="btn btn-outline" style="padding:6px 14px;font-size:12px;" onclick="loadReport('${r.data.date}')">📥 載入</button>
+          <button class="btn btn-outline" style="padding:6px 14px;font-size:12px;" onclick="loadReport('${r.data.date}','${r.data._user || ''}')">📥 載入</button>
           <button class="btn btn-outline" style="padding:6px 14px;font-size:12px;" onclick="shareSingleReport('${r.data.date}')">🔗 分享</button>
         </div>
       </div>
@@ -3001,7 +3044,9 @@ function deleteReport(date) {
     showToast('⚠️ 僅USER可刪除報表'); return;
   }
   if (!confirm(`確定刪除 ${date} 的報表？`)) return;
-  localStorage.removeItem('dailyReport_' + date);
+  // Try to find the right key for this date
+  const uid = (currentUser && currentUser.role === 'admin' && viewingEmployee) ? viewingEmployee : (currentUser ? currentUser.id : '');
+  localStorage.removeItem(getReportKey(uid, date));
   loadHistory();
   showToast('🗑️ 已刪除報表');
 }
@@ -3016,9 +3061,11 @@ function setPlatformData(prefix, data) {
   setVal(prefix + '_tomorrow', data?.tomorrow);
 }
 
-function loadReport(date) {
-  const data = JSON.parse(localStorage.getItem('dailyReport_' + date));
-  if (!data) return;
+function loadReport(date, userId) {
+  const uid = userId || (currentUser ? currentUser.id : '');
+  const raw = localStorage.getItem(getReportKey(uid, date));
+  if (!raw) return;
+  const data = JSON.parse(raw);
 
   dateInput.value = data.date;
   daySelect.value = data.day;
@@ -3067,7 +3114,8 @@ function loadReport(date) {
 }
 
 function shareSingleReport(date) {
-  const data = JSON.parse(localStorage.getItem('dailyReport_' + date));
+  const uid = (currentUser && currentUser.role === 'admin' && viewingEmployee) ? viewingEmployee : (currentUser ? currentUser.id : '');
+  const data = JSON.parse(localStorage.getItem(getReportKey(uid, date)));
   if (!data) return;
   const text = generateTextReport(data);
   if (navigator.share) {
@@ -3085,10 +3133,7 @@ function setVal(id, val) {
 // ====== Auto-load today's report on startup ======
 window.addEventListener('DOMContentLoaded', () => {
   clearFormFields();
-  const todayKey = 'dailyReport_' + dateInput.value;
-  if (localStorage.getItem(todayKey)) {
-    loadReport(dateInput.value);
-  }
+  // Will be handled by checkSavedLogin or manual login
 });
 
 // ====== Lichang Project Tracker ======
