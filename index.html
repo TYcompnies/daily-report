@@ -3117,8 +3117,6 @@ function deleteReport(date) {
   // Refresh employee view if applicable
   if (viewingEmployee) viewEmployee(viewingEmployee);
 }
-  showToast('🗑️ 已刪除報表');
-}
 
 function setPlatformData(prefix, data) {
   setVal(prefix + '_posts', data?.posts);
