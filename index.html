@@ -171,6 +171,53 @@
   .user-badge.user { background: rgba(5,150,105,.85); color: #fff; }
   .user-badge:hover { opacity: .9; }
 
+  /* Sync Status Badge */
+  .sync-status-badge {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    background: rgba(255,255,255,.9);
+    padding: 4px 10px;
+    border-radius: 20px;
+    cursor: pointer;
+    box-shadow: 0 1px 4px rgba(0,0,0,.1);
+    transition: all .2s;
+  }
+  .sync-status-badge:hover { background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.15); }
+  .sync-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .sync-dot.online { background: #10b981; animation: pulse-dot 2s infinite; }
+  .sync-dot.offline { background: #ef4444; }
+  .sync-dot.syncing { background: #3b82f6; animation: pulse-dot 1s infinite; }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: .4; }
+  }
+
+  /* Sync Settings Panel */
+  .sync-settings-panel {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,.4);
+    z-index: 3000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+  }
+  .sync-settings-card {
+    background: #fff;
+    border-radius: 16px;
+    padding: 24px;
+    max-width: 400px;
+    width: 100%;
+    box-shadow: 0 20px 60px rgba(0,0,0,.3);
+  }
+
   /* Header */
   .app-header {
     text-align: center;
@@ -1321,15 +1368,38 @@
   </div>
 </div>
 
-<!-- User Badge -->
-<div class="user-badge" id="userBadge" style="display:none;" onclick="doLogout()">
-  <span id="userBadgeIcon">👑</span>
-  <span id="userBadgeName">管理者</span>
-  <span style="font-size:10px;opacity:.7;"> · 點擊登出</span>
+<!-- User Badge + Sync Status -->
+<div style="position:fixed;top:12px;right:12px;z-index:1500;display:flex;align-items:center;gap:8px;">
+  <div class="sync-status-badge" id="syncStatusBadge" onclick="toggleSyncSettings()" title="點擊設定同步伺服器">
+    <span class="sync-dot offline" id="syncDot"></span>
+    <span id="syncLabel" style="font-size:11px;">離線</span>
+  </div>
+  <div class="user-badge" id="userBadge" style="display:none;" onclick="doLogout()">
+    <span id="userBadgeIcon">👑</span>
+    <span id="userBadgeName">管理者</span>
+    <span style="font-size:10px;opacity:.7;"> · 點擊登出</span>
+  </div>
 </div>
 
-<!-- Online/Offline Badge -->
-<div class="status-badge online" id="statusBadge">🟢 已連線</div>
+<!-- Sync Settings Panel -->
+<div class="sync-settings-panel" id="syncSettingsPanel" style="display:none;">
+  <div class="sync-settings-card">
+    <h3 style="font-size:15px;margin-bottom:12px;">☁️ 跨裝置同步設定</h3>
+    <p style="font-size:12px;color:#666;margin-bottom:10px;">輸入同步伺服器網址，讓所有裝置的報表資料保持同步</p>
+    <div style="display:flex;gap:8px;margin-bottom:10px;">
+      <input type="text" id="syncServerInput" placeholder="例: 192.168.0.19:3000 或 http://your-server:3000" style="flex:1;padding:8px 12px;border:1px solid #ddd;border-radius:8px;font-size:13px;">
+      <button onclick="applySyncServer()" style="padding:8px 16px;background:var(--primary);color:#fff;border:none;border-radius:8px;font-size:13px;cursor:pointer;">連線</button>
+    </div>
+    <div id="syncStatusMsg" style="font-size:12px;color:#666;"></div>
+    <div style="margin-top:10px;padding:8px;background:#f0f4ff;border-radius:8px;font-size:11px;color:#555;">
+      💡 <b>使用方式：</b><br>
+      1. 在主電腦執行 <code>node server.js</code><br>
+      2. 輸入主電腦的 IP:Port（如 192.168.0.19:3000）<br>
+      3. 所有連線同一伺服器的裝置即可同步報表
+    </div>
+    <button onclick="toggleSyncSettings()" style="margin-top:10px;padding:6px 14px;background:#eee;border:none;border-radius:8px;font-size:12px;cursor:pointer;">關閉</button>
+  </div>
+</div>
 
 <div class="app-container">
 
@@ -1898,6 +1968,225 @@
 <div class="toast" id="toast"></div>
 
 <script>
+// ====== Cloud Sync Manager ======
+const SyncManager = {
+  serverUrl: '',  // Auto-detected or configured
+  isOnline: false,
+  lastSyncTime: null,
+  syncInterval: null,
+  SYNC_INTERVAL_MS: 15000,  // Sync every 15 seconds
+
+  // Auto-detect server URL
+  detectServerUrl() {
+    // If loaded from the server itself, use same origin
+    if (location.protocol === 'http:' || (location.protocol === 'https:' && location.port === '3000')) {
+      return location.origin;
+    }
+    // If on GitHub Pages, try common LAN IPs
+    if (location.hostname.includes('github.io')) {
+      // Check stored server URL first
+      const stored = localStorage.getItem('syncServerUrl');
+      if (stored) return stored;
+      return '';  // No server configured yet
+    }
+    // Default: same origin
+    return location.origin;
+  },
+
+  // Initialize sync
+  async init() {
+    this.serverUrl = this.detectServerUrl();
+    if (!this.serverUrl) {
+      this.updateStatus('offline', '未設定同步伺服器');
+      return;
+    }
+    // Test connection
+    await this.ping();
+    if (this.isOnline) {
+      // Initial full sync
+      await this.fullSync();
+      // Start periodic sync
+      this.syncInterval = setInterval(() => this.fullSync(), this.SYNC_INTERVAL_MS);
+    }
+  },
+
+  // Test server connection
+  async ping() {
+    if (!this.serverUrl) { this.isOnline = false; return; }
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+      const res = await fetch(this.serverUrl + '/api/ping', { signal: controller.signal });
+      clearTimeout(timeout);
+      this.isOnline = res.ok;
+      if (this.isOnline) this.updateStatus('online', '已連線');
+      else this.updateStatus('offline', '連線失敗');
+    } catch (e) {
+      this.isOnline = false;
+      this.updateStatus('offline', '伺服器未回應');
+    }
+  },
+
+  // Full bidirectional sync: send all local data, receive all server data, merge
+  async fullSync() {
+    if (!this.serverUrl || !this.isOnline) return;
+    try {
+      // Collect all local report data
+      const localReports = {};
+      const localProjects = {};
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key.startsWith('dailyReport_')) {
+          try { localReports[key] = JSON.parse(localStorage.getItem(key)); }
+          catch(e) {}
+        }
+        if (key === 'lichang_projects') {
+          try { localProjects[key] = JSON.parse(localStorage.getItem(key)); }
+          catch(e) {}
+        }
+      }
+
+      const res = await fetch(this.serverUrl + '/api/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reports: localReports, projects: localProjects })
+      });
+
+      if (!res.ok) throw new Error('Sync failed: ' + res.status);
+
+      const data = await res.json();
+      if (data.success) {
+        // Merge server data into localStorage
+        let updated = false;
+        if (data.reports) {
+          for (const [key, value] of Object.entries(data.reports)) {
+            const localRaw = localStorage.getItem(key);
+            const localData = localRaw ? JSON.parse(localRaw) : null;
+            // Server data is newer if it has _serverUpdatedAt and local doesn't, or server's is newer
+            const serverTime = value._serverUpdatedAt || '';
+            const localTime = localData?._serverUpdatedAt || '';
+            if (!localData || serverTime >= localTime) {
+              localStorage.setItem(key, JSON.stringify(value));
+              updated = true;
+            }
+          }
+        }
+        if (data.projects) {
+          for (const [key, value] of Object.entries(data.projects)) {
+            const localRaw = localStorage.getItem(key);
+            // Server stores projects as {data: [...], _serverUpdatedAt: "..."}
+            // localStorage stores as plain [...]
+            const serverTime = value._serverUpdatedAt || '';
+            let localTime = '';
+            try {
+              // Check if we have a stored sync timestamp
+              localTime = localStorage.getItem(key + '_syncTime') || '';
+            } catch(e) {}
+
+            if (!localRaw || serverTime >= localTime) {
+              // Extract the actual data array from server format
+              const actualData = value.data !== undefined ? value.data : value;
+              localStorage.setItem(key, JSON.stringify(actualData));
+              if (serverTime) localStorage.setItem(key + '_syncTime', serverTime);
+              updated = true;
+            }
+          }
+        }
+        this.lastSyncTime = new Date();
+        this.updateStatus('online', '同步完成 ' + this.lastSyncTime.toLocaleTimeString());
+        if (updated) {
+          // Refresh the UI if data changed
+          if (typeof loadHistory === 'function') loadHistory();
+          if (typeof viewEmployee === 'function' && typeof viewingEmployee !== 'undefined' && viewingEmployee) {
+            viewEmployee(viewingEmployee);
+          }
+          if (typeof renderProjectList === 'function' && currentUser && currentUser.id === 'lichang') {
+            renderProjectList();
+            renderProjectStats();
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Sync error:', e);
+      this.isOnline = false;
+      this.updateStatus('offline', '同步失敗');
+    }
+  },
+
+  // Save a single report to server
+  async saveReport(key, data) {
+    if (!this.serverUrl || !this.isOnline) return false;
+    try {
+      const res = await fetch(this.serverUrl + '/api/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, data })
+      });
+      return res.ok;
+    } catch (e) {
+      console.error('Save to server failed:', e);
+      return false;
+    }
+  },
+
+  // Save project data to server
+  async saveProject(key, data) {
+    if (!this.serverUrl || !this.isOnline) return false;
+    try {
+      const res = await fetch(this.serverUrl + '/api/project', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key, data })
+      });
+      return res.ok;
+    } catch (e) {
+      console.error('Save project to server failed:', e);
+      return false;
+    }
+  },
+
+  // Delete a report from server
+  async deleteReport(key) {
+    if (!this.serverUrl || !this.isOnline) return false;
+    try {
+      const res = await fetch(this.serverUrl + '/api/report', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ key })
+      });
+      return res.ok;
+    } catch (e) {
+      console.error('Delete from server failed:', e);
+      return false;
+    }
+  },
+
+  // Update sync status UI
+  updateStatus(status, text) {
+    const dot = document.getElementById('syncDot');
+    const label = document.getElementById('syncLabel');
+    if (!dot || !label) return;
+    dot.className = 'sync-dot ' + status;
+    label.textContent = text || (status === 'online' ? '已連線' : '離線');
+  },
+
+  // Set custom server URL (for GitHub Pages users)
+  setServerUrl(url) {
+    if (url && !url.startsWith('http')) url = 'http://' + url;
+    this.serverUrl = url.replace(/\/$/, '');
+    localStorage.setItem('syncServerUrl', this.serverUrl);
+    // Test new URL
+    this.ping().then(() => {
+      if (this.isOnline) {
+        this.fullSync();
+        if (!this.syncInterval) {
+          this.syncInterval = setInterval(() => this.fullSync(), this.SYNC_INTERVAL_MS);
+        }
+      }
+    });
+  }
+};
+
 // ====== Storage Key Helper (multi-user fix) ======
 function getReportKey(userId, date) {
   return 'dailyReport_' + userId + '_' + date;
@@ -2749,8 +3038,11 @@ function saveReport() {
     data._user = viewingEmployee;
   }
   const key = getReportKey(userId, data.date);
+  data._serverUpdatedAt = new Date().toISOString();  // Track update time for sync
   localStorage.setItem(key, JSON.stringify(data));
   showToast('✅ 報表已儲存！');
+  // Sync to server
+  SyncManager.saveReport(key, data);
   loadHistory();
   // If admin viewing employee, refresh the employee report view
   if (currentUser && currentUser.role === 'admin' && viewingEmployee) {
@@ -3107,7 +3399,11 @@ function deleteReport(date) {
       }
     }
   }
-  keysToRemove.forEach(k => localStorage.removeItem(k));
+  keysToRemove.forEach(k => {
+    localStorage.removeItem(k);
+    // Also delete from server
+    SyncManager.deleteReport(k);
+  });
   if (found) {
     showToast('🗑️ 報表已刪除');
   } else {
@@ -3200,8 +3496,36 @@ function setVal(id, val) {
 // ====== Auto-load today's report on startup ======
 window.addEventListener('DOMContentLoaded', () => {
   clearFormFields();
-  // Will be handled by checkSavedLogin or manual login
+  // Initialize cloud sync
+  SyncManager.init();
+  // Pre-fill sync server input if stored
+  const stored = localStorage.getItem('syncServerUrl');
+  if (stored) {
+    document.getElementById('syncServerInput').value = stored.replace(/^https?:\/\//, '');
+  }
 });
+
+// ====== Sync Settings UI ======
+function toggleSyncSettings() {
+  const panel = document.getElementById('syncSettingsPanel');
+  panel.style.display = panel.style.display === 'none' ? 'flex' : 'none';
+}
+
+async function applySyncServer() {
+  const input = document.getElementById('syncServerInput').value.trim();
+  const msg = document.getElementById('syncStatusMsg');
+  if (!input) { msg.innerHTML = '<span style="color:#ef4444;">⚠️ 請輸入伺服器網址</span>'; return; }
+  msg.innerHTML = '⏳ 正在連線...';
+  SyncManager.setServerUrl(input);
+  // Wait a moment for ping to complete
+  await new Promise(r => setTimeout(r, 2000));
+  if (SyncManager.isOnline) {
+    msg.innerHTML = '<span style="color:#10b981;">✅ 連線成功！資料已同步</span>';
+    toggleSyncSettings();
+  } else {
+    msg.innerHTML = '<span style="color:#ef4444;">❌ 連線失敗，請確認伺服器是否運行中</span>';
+  }
+}
 
 // ====== Lichang Project Tracker ======
 function getLichangProjects() {
@@ -3212,6 +3536,8 @@ function getLichangProjects() {
 
 function saveLichangProjects(projects) {
   localStorage.setItem('lichang_projects', JSON.stringify(projects));
+  // Sync to server (send as separate metadata)
+  SyncManager.saveProject('lichang_projects', { data: projects, _serverUpdatedAt: new Date().toISOString() });
 }
 
 function addProject() {
